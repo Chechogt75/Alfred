@@ -2,13 +2,13 @@ name: Alfred - Agenda del Dia
 
 on:
   schedule:
-    - cron: '30 11 * * *'
+ - cron: '30 9 * * *'   # 4:30 AM Colombia (UTC-5)
   workflow_dispatch:
 
 jobs:
   alfred-agenda:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
