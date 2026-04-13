@@ -1,10 +1,8 @@
 name: Alfred - Agenda del Dia
-
 on:
   schedule:
- - cron: '30 9 * * *'   # 4:30 AM Colombia (UTC-5)
+    - cron: '30 9 * * *'
   workflow_dispatch:
-
 jobs:
   alfred-agenda:
     runs-on: ubuntu-latest
