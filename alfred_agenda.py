@@ -2,7 +2,7 @@
 """
 Alfred - Asistente Personal de Agenda Diaria
 """
- 
+
 import os
 import time
 import json
@@ -12,7 +12,7 @@ import anthropic
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
- 
+
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
@@ -20,10 +20,10 @@ ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
 TELEGRAM_BOT_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID     = os.environ.get("TELEGRAM_CHAT_ID", "")
 CALENDAR_ID          = os.environ.get("CALENDAR_ID", "primary")
- 
+
 BOGOTA_OFFSET = datetime.timezone(datetime.timedelta(hours=-5))
- 
- 
+
+
 def get_google_credentials():
     creds = Credentials(
         token=None, refresh_token=GOOGLE_REFRESH_TOKEN,
@@ -33,45 +33,77 @@ def get_google_credentials():
                 "https://www.googleapis.com/auth/gmail.readonly"])
     creds.refresh(Request())
     return creds
- 
- 
+
+
 def get_calendar_events(creds):
     service = build("calendar", "v3", credentials=creds)
-    now = datetime.datetime.now(BOGOTA_OFFSET)
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    now          = datetime.datetime.now(BOGOTA_OFFSET)
+    start_of_day = now.replace(hour=0,  minute=0,  second=0,  microsecond=0)
     end_of_day   = now.replace(hour=23, minute=59, second=59, microsecond=0)
-    events_result = service.events().list(
-        calendarId=CALENDAR_ID, timeMin=start_of_day.isoformat(),
-        timeMax=end_of_day.isoformat(), maxResults=20,
-        singleEvents=True, orderBy="startTime").execute()
-    events = events_result.get("items", [])
+
+    calendars_result = service.calendarList().list().execute()
+    calendars = calendars_result.get("items", [])
+    print(f"  Calendarios encontrados: {[c.get('summary','?') for c in calendars]}")
+
+    all_events = []
+    for cal in calendars:
+        cal_id   = cal["id"]
+        cal_name = cal.get("summary", "")
+        if any(skip in cal_id.lower() for skip in ["holiday", "contacts", "directory"]):
+            continue
+        try:
+            result = service.events().list(
+                calendarId=cal_id,
+                timeMin=start_of_day.isoformat(),
+                timeMax=end_of_day.isoformat(),
+                maxResults=20, singleEvents=True,
+                orderBy="startTime").execute()
+            for ev in result.get("items", []):
+                ev["_cal_name"] = cal_name
+                all_events.append(ev)
+        except Exception as e:
+            print(f"  Error leyendo calendario '{cal_name}': {e}")
+
+    all_events.sort(key=lambda ev: ev["start"].get("dateTime", ev["start"].get("date", "")))
+
     formatted = []
-    for event in events:
-        start = event["start"].get("dateTime", event["start"].get("date"))
-        end   = event["end"].get("dateTime", event["end"].get("date"))
+    seen = set()
+    for event in all_events:
+        ev_id = event.get("id", "")
+        if ev_id in seen:
+            continue
+        seen.add(ev_id)
+
+        start       = event["start"].get("dateTime", event["start"].get("date"))
+        end         = event["end"].get("dateTime",   event["end"].get("date"))
         summary     = event.get("summary", "Sin titulo")
         location    = event.get("location", "")
         description = event.get("description", "")
+        cal_name    = event.get("_cal_name", "")
+
         if "T" in start:
-            dt         = datetime.datetime.fromisoformat(start)
+            dt          = datetime.datetime.fromisoformat(start)
             hora_inicio = dt.strftime("%I:%M %p")
-            dt_end     = datetime.datetime.fromisoformat(end)
-            hora_fin   = dt_end.strftime("%I:%M %p")
-            hora_str   = f"{hora_inicio} - {hora_fin}"
+            dt_end      = datetime.datetime.fromisoformat(end)
+            hora_fin    = dt_end.strftime("%I:%M %p")
+            hora_str    = f"{hora_inicio} - {hora_fin}"
         else:
             hora_str = "Todo el dia"
+
         entry = f"- {hora_str}: {summary}"
         if location:
             entry += f" (Lugar: {location})"
+        if cal_name and cal_name.lower() not in ("primary", "checho", summary.lower()):
+            entry += f" [{cal_name}]"
         if description:
-            desc_short = description[:100].replace("\n", " ")
-            entry += f"\n  Nota: {desc_short}"
+            entry += f"\n  Nota: {description[:100].replace(chr(10), ' ')}"
         formatted.append(entry)
+
     if not formatted:
         return "No hay eventos programados para hoy."
     return "\n".join(formatted)
- 
- 
+
+
 def get_urgent_emails(creds):
     service = build("gmail", "v1", credentials=creds)
     query = ("subject:(urgente OR vencimiento OR pago OR extracto OR factura "
@@ -94,8 +126,8 @@ def get_urgent_emails(creds):
     if not formatted:
         return "No hay emails urgentes en las ultimas 24 horas."
     return "\n".join(formatted)
- 
- 
+
+
 def format_with_claude(calendar_text, email_text):
     now   = datetime.datetime.now(BOGOTA_OFFSET)
     fecha = now.strftime("%A %d de %B de %Y")
@@ -108,19 +140,19 @@ def format_with_claude(calendar_text, email_text):
              "November": "Noviembre", "December": "Diciembre"}
     for en, es in {**dias, **meses}.items():
         fecha = fecha.replace(en, es)
- 
-    prompt = f"""Eres Alfred, el asistente personal de Checho. Genera un reporte matutino llamado "Agenda del Dia" con formato bonito para Telegram (usa emojis apropiados).
-Fecha: {fecha}
-Hora del reporte: {hora}
-EVENTOS DE HOY EN GOOGLE CALENDAR:
-{calendar_text}
-EMAILS URGENTES (ultimas 24h):
-{email_text}
-Instrucciones: saludo amigable, emojis de reloj, seccion emails urgentes, resumen ejecutivo, formato Telegram (*negrita*, _cursiva_), tono de mayordomo britanico, maximo 2000 chars."""
- 
+
+    prompt = (
+        'Eres Alfred, el asistente personal de Checho. Genera un reporte matutino '
+        'llamado "Agenda del Dia" con formato bonito para Telegram (usa emojis).\n'
+        f'Fecha: {fecha}\nHora del reporte: {hora}\n'
+        f'EVENTOS DE HOY EN GOOGLE CALENDAR:\n{calendar_text}\n'
+        f'EMAILS URGENTES (ultimas 24h):\n{email_text}\n'
+        'Instrucciones: saludo amigable, emojis de reloj, seccion emails urgentes, '
+        'resumen ejecutivo, formato Telegram (*negrita*, _cursiva_), '
+        'tono de mayordomo britanico, maximo 2000 chars.'
+    )
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
- 
-    # Reintentos ante error 529 (API saturada) — espera progresiva: 30s, 60s, 90s
     max_attempts = 4
     for attempt in range(max_attempts):
         try:
@@ -129,21 +161,18 @@ Instrucciones: saludo amigable, emojis de reloj, seccion emails urgentes, resume
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}])
             return message.content[0].text
- 
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 if attempt < max_attempts - 1:
-                    wait = 30 * (attempt + 1)   # 30s → 60s → 90s
+                    wait = 30 * (attempt + 1)
                     print(f"  API saturada (529). Reintento {attempt+1}/{max_attempts-1} en {wait}s...")
                     time.sleep(wait)
                 else:
-                    raise Exception(
-                        f"API de Anthropic no disponible despues de {max_attempts} intentos (error 529)."
-                    ) from e
+                    raise Exception(f"API no disponible tras {max_attempts} intentos.") from e
             else:
-                raise   # otros errores los propagamos inmediatamente
- 
- 
+                raise
+
+
 def send_telegram(text):
     url     = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
@@ -154,8 +183,8 @@ def send_telegram(text):
         raise Exception(f"Telegram error: {result}")
     print("Mensaje enviado por Telegram!")
     return result
- 
- 
+
+
 def main():
     print("Alfred - Agenda del Dia")
     print("=" * 50)
@@ -171,7 +200,7 @@ def main():
     print("Enviando por Telegram...")
     send_telegram(report)
     print("Alfred ha completado la Agenda del Dia!")
- 
- 
+
+
 if __name__ == "__main__":
     main()
