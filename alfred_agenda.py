@@ -41,42 +41,58 @@ def get_calendar_events(creds):
     start_of_day = now.replace(hour=0,  minute=0,  second=0,  microsecond=0)
     end_of_day   = now.replace(hour=23, minute=59, second=59, microsecond=0)
 
-    calendars_result = service.calendarList().list().execute()
-    calendars = calendars_result.get("items", [])
-    print(f"  Calendarios encontrados: {[c.get('summary','?') for c in calendars]}")
+    print(f"  Rango: {start_of_day.isoformat()} -> {end_of_day.isoformat()}")
+
+    # Obtener TODOS los calendarios, incluyendo los ocultos y con paginacion
+    all_calendars = []
+    page_token = None
+    while True:
+        cal_list = service.calendarList().list(
+            showHidden=True,
+            pageToken=page_token
+        ).execute()
+        all_calendars.extend(cal_list.get("items", []))
+        page_token = cal_list.get("nextPageToken")
+        if not page_token:
+            break
+
+    print(f"  Calendarios encontrados ({len(all_calendars)}): {[(c.get('summary','?'), c['id'][:40]) for c in all_calendars]}")
 
     all_events = []
-    for cal in calendars:
+    seen_ids   = set()
+    for cal in all_calendars:
         cal_id   = cal["id"]
         cal_name = cal.get("summary", "")
+        # Saltar festivos, contactos y directorio
         if any(skip in cal_id.lower() for skip in ["holiday", "contacts", "directory"]):
+            print(f"  Saltando: {cal_name}")
             continue
         try:
             result = service.events().list(
                 calendarId=cal_id,
                 timeMin=start_of_day.isoformat(),
                 timeMax=end_of_day.isoformat(),
-                maxResults=20, singleEvents=True,
-                orderBy="startTime").execute()
-            for ev in result.get("items", []):
-                ev["_cal_name"] = cal_name
-                all_events.append(ev)
+                maxResults=50, singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+            items = result.get("items", [])
+            print(f"  > {cal_name} ({cal_id[:35]}): {len(items)} eventos")
+            for ev in items:
+                ev_id = ev.get("id", "")
+                if ev_id not in seen_ids:
+                    seen_ids.add(ev_id)
+                    ev["_cal_name"] = cal_name
+                    all_events.append(ev)
         except Exception as e:
-            print(f"  Error leyendo calendario '{cal_name}': {e}")
+            print(f"  Error leyendo calendario '{cal_name}' ({cal_id[:35]}): {e}")
 
     all_events.sort(key=lambda ev: ev["start"].get("dateTime", ev["start"].get("date", "")))
 
     formatted = []
-    seen = set()
     for event in all_events:
-        ev_id = event.get("id", "")
-        if ev_id in seen:
-            continue
-        seen.add(ev_id)
-
-        start       = event["start"].get("dateTime", event["start"].get("date"))
-        end         = event["end"].get("dateTime",   event["end"].get("date"))
         summary     = event.get("summary", "Sin titulo")
+        start       = event["start"].get("dateTime", event["start"].get("date", ""))
+        end         = event["end"].get("dateTime", event["end"].get("date", ""))
         location    = event.get("location", "")
         description = event.get("description", "")
         cal_name    = event.get("_cal_name", "")
@@ -106,44 +122,43 @@ def get_calendar_events(creds):
 
 def get_urgent_emails(creds):
     service = build("gmail", "v1", credentials=creds)
-    query = ("subject:(urgente OR vencimiento OR pago OR extracto OR factura "
-             "OR forward OR divisa OR alerta OR recordatorio OR importante) "
-             "newer_than:1d")
-    results = service.users().messages().list(userId="me", q=query, maxResults=5).execute()
-    messages = results.get("messages", [])
-    formatted = []
-    for msg_ref in messages:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="metadata",
-            metadataHeaders=["Subject", "From", "Date"]).execute()
-        headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
-        subject = headers.get("Subject", "Sin asunto")
-        sender  = headers.get("From", "Desconocido")
-        if "<" in sender:
-            sender = sender.split("<")[0].strip().strip('"')
-        snippet = msg.get("snippet", "")[:120]
-        formatted.append(f"- De: {sender}\n  Asunto: {subject}\n  Vista previa: {snippet}")
-    if not formatted:
+    now_utc   = datetime.datetime.now(datetime.timezone.utc)
+    since_utc = now_utc - datetime.timedelta(hours=24)
+    query     = f"is:unread after:{int(since_utc.timestamp())} -from:noreply -from:no-reply -from:notifications"
+
+    try:
+        result   = service.users().messages().list(userId="me", q=query, maxResults=10).execute()
+        messages = result.get("messages", [])
+    except Exception:
+        return "No se pudo acceder al correo."
+
+    if not messages:
         return "No hay emails urgentes en las ultimas 24 horas."
-    return "\n".join(formatted)
+
+    emails_text = []
+    for msg in messages[:5]:
+        try:
+            detail  = service.users().messages().get(userId="me", id=msg["id"], format="metadata",
+                       metadataHeaders=["From","Subject","Date"]).execute()
+            headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
+            subject = headers.get("Subject", "Sin asunto")[:80]
+            sender  = headers.get("From",    "Desconocido")[:50]
+            emails_text.append(f"- De: {sender}\n  Asunto: {subject}")
+        except Exception:
+            continue
+
+    return "\n".join(emails_text) if emails_text else "No hay emails urgentes."
 
 
-def format_with_claude(calendar_text, email_text):
+def generate_report(calendar_text, email_text):
     now   = datetime.datetime.now(BOGOTA_OFFSET)
     fecha = now.strftime("%A %d de %B de %Y")
     hora  = now.strftime("%I:%M %p")
-    dias  = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miercoles",
-             "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sabado", "Sunday": "Domingo"}
-    meses = {"January": "Enero", "February": "Febrero", "March": "Marzo",
-             "April": "Abril", "May": "Mayo", "June": "Junio", "July": "Julio",
-             "August": "Agosto", "September": "Septiembre", "October": "Octubre",
-             "November": "Noviembre", "December": "Diciembre"}
-    for en, es in {**dias, **meses}.items():
-        fecha = fecha.replace(en, es)
 
     prompt = (
-        'Eres Alfred, el asistente personal de Checho. Genera un reporte matutino '
-        'llamado "Agenda del Dia" con formato bonito para Telegram (usa emojis).\n'
+        'Eres Alfred, mayordomo ejecutivo de Sr. Checho, Director General de Amin.\n'
+        'Genera un informe matutino conciso y profesional en espanol '
+        'en formato bonito para Telegram (usa emojis).\n'
         f'Fecha: {fecha}\nHora del reporte: {hora}\n'
         f'EVENTOS DE HOY EN GOOGLE CALENDAR:\n{calendar_text}\n'
         f'EMAILS URGENTES (ultimas 24h):\n{email_text}\n'
@@ -165,40 +180,42 @@ def format_with_claude(calendar_text, email_text):
             if e.status_code == 529:
                 if attempt < max_attempts - 1:
                     wait = 30 * (attempt + 1)
-                    print(f"  API saturada (529). Reintento {attempt+1}/{max_attempts-1} en {wait}s...")
+                    print(f"API sobrecargada (529). Esperando {wait}s antes de reintento {attempt+2}/{max_attempts}...")
                     time.sleep(wait)
                 else:
-                    raise Exception(f"API no disponible tras {max_attempts} intentos.") from e
+                    return "Alfred no pudo generar el reporte (API sobrecargada). Intente de nuevo mas tarde."
             else:
                 raise
+    return "Error generando reporte."
 
 
 def send_telegram(text):
-    url     = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    response = requests.post(url, json=payload, timeout=30)
-    response.raise_for_status()
-    result = response.json()
-    if not result.get("ok"):
-        raise Exception(f"Telegram error: {result}")
-    print("Mensaje enviado por Telegram!")
-    return result
+    url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    resp = requests.post(url, data=data, timeout=30)
+    resp.raise_for_status()
 
 
 def main():
     print("Alfred - Agenda del Dia")
     print("=" * 50)
+
     print("[1/4] Autenticando con Google...")
     creds = get_google_credentials()
+
     print("[2/4] Consultando Google Calendar...")
     calendar_text = get_calendar_events(creds)
+
     print("[3/4] Buscando emails urgentes...")
     email_text = get_urgent_emails(creds)
+
     print("[4/4] Generando reporte con Claude...")
-    report = format_with_claude(calendar_text, email_text)
+    report = generate_report(calendar_text, email_text)
     print(f"Reporte generado ({len(report)} chars)")
+
     print("Enviando por Telegram...")
     send_telegram(report)
+    print("Mensaje enviado por Telegram!")
     print("Alfred ha completado la Agenda del Dia!")
 
 
