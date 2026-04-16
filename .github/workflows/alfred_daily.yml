@@ -1,7 +1,7 @@
 name: Alfred - Agenda del Dia
 on:
   schedule:
-    - cron: '30 9 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
 jobs:
   alfred-agenda:
