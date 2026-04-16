@@ -26,9 +26,11 @@ BOGOTA_OFFSET = datetime.timezone(datetime.timedelta(hours=-5))
 
 def get_google_credentials():
     creds = Credentials(
-        token=None, refresh_token=GOOGLE_REFRESH_TOKEN,
+        token=None,
+        refresh_token=GOOGLE_REFRESH_TOKEN,
         token_uri="https://oauth2.googleapis.com/token",
-        client_id=GOOGLE_CLIENT_ID, client_secret=GOOGLE_CLIENT_SECRET,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
         scopes=["https://www.googleapis.com/auth/calendar.readonly",
                 "https://www.googleapis.com/auth/gmail.readonly"])
     creds.refresh(Request())
@@ -37,11 +39,14 @@ def get_google_credentials():
 
 def get_calendar_events(creds):
     service = build("calendar", "v3", credentials=creds)
-    now          = datetime.datetime.now(BOGOTA_OFFSET)
-    start_of_day = now.replace(hour=0,  minute=0,  second=0,  microsecond=0)
-    end_of_day   = now.replace(hour=23, minute=59, second=59, microsecond=0)
 
-    print(f"  Rango: {start_of_day.isoformat()} -> {end_of_day.isoformat()}")
+    # Usamos MAÃANA (hoy + 1 dia) porque Alfred envia el reporte la noche anterior
+    hoy          = datetime.datetime.now(BOGOTA_OFFSET)
+    manana        = hoy + datetime.timedelta(days=1)
+    start_of_day = manana.replace(hour=0,  minute=0,  second=0,  microsecond=0)
+    end_of_day   = manana.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    print(f"  Rango (manana): {start_of_day.isoformat()} -> {end_of_day.isoformat()}")
 
     # Obtener TODOS los calendarios, incluyendo los ocultos y con paginacion
     all_calendars = []
@@ -63,10 +68,12 @@ def get_calendar_events(creds):
     for cal in all_calendars:
         cal_id   = cal["id"]
         cal_name = cal.get("summary", "")
+
         # Saltar festivos, contactos y directorio
         if any(skip in cal_id.lower() for skip in ["holiday", "contacts", "directory"]):
             print(f"  Saltando: {cal_name}")
             continue
+
         try:
             result = service.events().list(
                 calendarId=cal_id,
@@ -92,17 +99,17 @@ def get_calendar_events(creds):
     for event in all_events:
         summary     = event.get("summary", "Sin titulo")
         start       = event["start"].get("dateTime", event["start"].get("date", ""))
-        end         = event["end"].get("dateTime", event["end"].get("date", ""))
+        end         = event["end"].get("dateTime",   event["end"].get("date",   ""))
         location    = event.get("location", "")
         description = event.get("description", "")
         cal_name    = event.get("_cal_name", "")
 
         if "T" in start:
-            dt          = datetime.datetime.fromisoformat(start)
+            dt         = datetime.datetime.fromisoformat(start)
             hora_inicio = dt.strftime("%I:%M %p")
-            dt_end      = datetime.datetime.fromisoformat(end)
-            hora_fin    = dt_end.strftime("%I:%M %p")
-            hora_str    = f"{hora_inicio} - {hora_fin}"
+            dt_end     = datetime.datetime.fromisoformat(end)
+            hora_fin   = dt_end.strftime("%I:%M %p")
+            hora_str   = f"{hora_inicio} - {hora_fin}"
         else:
             hora_str = "Todo el dia"
 
@@ -116,7 +123,7 @@ def get_calendar_events(creds):
         formatted.append(entry)
 
     if not formatted:
-        return "No hay eventos programados para hoy."
+        return "No hay eventos programados para manana."
     return "\n".join(formatted)
 
 
@@ -124,7 +131,7 @@ def get_urgent_emails(creds):
     service = build("gmail", "v1", credentials=creds)
     now_utc   = datetime.datetime.now(datetime.timezone.utc)
     since_utc = now_utc - datetime.timedelta(hours=24)
-    query     = f"is:unread after:{int(since_utc.timestamp())} -from:noreply -from:no-reply -from:notifications"
+    query = f"is:unread after:{int(since_utc.timestamp())} -from:noreply -from:no-reply -from:notifications"
 
     try:
         result   = service.users().messages().list(userId="me", q=query, maxResults=10).execute()
@@ -138,8 +145,9 @@ def get_urgent_emails(creds):
     emails_text = []
     for msg in messages[:5]:
         try:
-            detail  = service.users().messages().get(userId="me", id=msg["id"], format="metadata",
-                       metadataHeaders=["From","Subject","Date"]).execute()
+            detail  = service.users().messages().get(
+                userId="me", id=msg["id"], format="metadata",
+                metadataHeaders=["From","Subject","Date"]).execute()
             headers = {h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])}
             subject = headers.get("Subject", "Sin asunto")[:80]
             sender  = headers.get("From",    "Desconocido")[:50]
@@ -151,19 +159,21 @@ def get_urgent_emails(creds):
 
 
 def generate_report(calendar_text, email_text):
-    now   = datetime.datetime.now(BOGOTA_OFFSET)
-    fecha = now.strftime("%A %d de %B de %Y")
-    hora  = now.strftime("%I:%M %p")
+    hoy    = datetime.datetime.now(BOGOTA_OFFSET)
+    manana  = hoy + datetime.timedelta(days=1)
+    fecha  = manana.strftime("%A %d de %B de %Y")
+    hora   = hoy.strftime("%I:%M %p")
 
     prompt = (
         'Eres Alfred, mayordomo ejecutivo de Sr. Checho, Director General de Amin.\n'
-        'Genera un informe matutino conciso y profesional en espanol '
+        'Genera un informe vespertino conciso y profesional en espanol '
         'en formato bonito para Telegram (usa emojis).\n'
-        f'Fecha: {fecha}\nHora del reporte: {hora}\n'
-        f'EVENTOS DE HOY EN GOOGLE CALENDAR:\n{calendar_text}\n'
+        f'Fecha del reporte: hoy en la noche\nAgenda para: {fecha}\nHora de envio: {hora}\n'
+        f'EVENTOS DE MANANA EN GOOGLE CALENDAR:\n{calendar_text}\n'
         f'EMAILS URGENTES (ultimas 24h):\n{email_text}\n'
-        'Instrucciones: saludo amigable, emojis de reloj, seccion emails urgentes, '
-        'resumen ejecutivo, formato Telegram (*negrita*, _cursiva_), '
+        'Instrucciones: saludo indicando que este es el briefing de la noche con la agenda del dia siguiente, '
+        'emojis de reloj y luna, seccion emails urgentes, '
+        'resumen ejecutivo de la agenda de manana, formato Telegram (*negrita*, _cursiva_), '
         'tono de mayordomo britanico, maximo 2000 chars.'
     )
 
@@ -197,26 +207,21 @@ def send_telegram(text):
 
 
 def main():
-    print("Alfred - Agenda del Dia")
+    print("Alfred - Briefing Nocturno (Agenda del Dia Siguiente)")
     print("=" * 50)
-
     print("[1/4] Autenticando con Google...")
     creds = get_google_credentials()
-
-    print("[2/4] Consultando Google Calendar...")
+    print("[2/4] Consultando Google Calendar (manana)...")
     calendar_text = get_calendar_events(creds)
-
     print("[3/4] Buscando emails urgentes...")
     email_text = get_urgent_emails(creds)
-
     print("[4/4] Generando reporte con Claude...")
     report = generate_report(calendar_text, email_text)
     print(f"Reporte generado ({len(report)} chars)")
-
     print("Enviando por Telegram...")
     send_telegram(report)
     print("Mensaje enviado por Telegram!")
-    print("Alfred ha completado la Agenda del Dia!")
+    print("Alfred ha completado el Briefing Nocturno!")
 
 
 if __name__ == "__main__":
