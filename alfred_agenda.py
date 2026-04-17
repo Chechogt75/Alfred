@@ -43,6 +43,10 @@ def get_calendar_events(creds):
     # Usamos MAÃANA (hoy + 1 dia) porque Alfred envia el reporte la noche anterior
     hoy          = datetime.datetime.now(BOGOTA_OFFSET)
     manana        = hoy + datetime.timedelta(days=1)
+    if manana.weekday() == 5:    # sabado -> lunes
+        manana += datetime.timedelta(days=2)
+    elif manana.weekday() == 6:  # domingo -> lunes
+        manana += datetime.timedelta(days=1)
     start_of_day = manana.replace(hour=0,  minute=0,  second=0,  microsecond=0)
     end_of_day   = manana.replace(hour=23, minute=59, second=59, microsecond=0)
 
@@ -161,6 +165,10 @@ def get_urgent_emails(creds):
 def generate_report(calendar_text, email_text):
     hoy    = datetime.datetime.now(BOGOTA_OFFSET)
     manana  = hoy + datetime.timedelta(days=1)
+    if manana.weekday() == 5:    # sabado -> lunes
+        manana += datetime.timedelta(days=2)
+    elif manana.weekday() == 6:  # domingo -> lunes
+        manana += datetime.timedelta(days=1)
     fecha  = manana.strftime("%A %d de %B de %Y")
     hora   = hoy.strftime("%I:%M %p")
 
