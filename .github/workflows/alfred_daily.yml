@@ -1,7 +1,7 @@
 name: Alfred - Agenda del Dia
 on:
   schedule:
-    - cron: '0 1 * * *'
+        - cron: '0 1 * * 2-6'    # 8:00 PM Colombia (UTC-5) lun-vie — Briefing Vespertino
   workflow_dispatch:
 jobs:
   alfred-agenda:
