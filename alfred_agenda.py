@@ -42,6 +42,10 @@ def get_calendar_events(creds):
 
     # Usamos MAÃANA (hoy + 1 dia) porque Alfred envia el reporte la noche anterior
     hoy          = datetime.datetime.now(BOGOTA_OFFSET)
+    # Compensar delays de GitHub Actions (hasta 6h): si el cron corre entre 0h-6h Bogota
+    # es porque se atraso desde las 8 PM — retrocedemos al dia anterior para calcular manana
+    if hoy.hour < 6:
+        hoy -= datetime.timedelta(days=1)
     manana        = hoy + datetime.timedelta(days=1)
     if manana.weekday() == 5:    # sabado -> lunes
         manana += datetime.timedelta(days=2)
