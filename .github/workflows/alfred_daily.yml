@@ -1,22 +1,33 @@
 name: Alfred - Agenda del Dia
+
 on:
   schedule:
-        - cron: '0 1 * * 2-6'    # 8:00 PM Colombia (UTC-5) lun-vie — Briefing Vespertino
+    # 8:17 PM Bogota (UTC-5) lun-vie = 01:17 UTC mar-sab.
+    # Minuto :17 evita la congestion de GitHub Actions en el :00
+    # que causaba delays de horas (llegaba a las 2 AM en vez de 8 PM).
+    - cron: '17 1 * * 2-6'
+
+  # Permite ejecucion manual desde GitHub
   workflow_dispatch:
+
 jobs:
   alfred-agenda:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run Alfred
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
