@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Alfred - Asistente Personal de Agenda Diaria
+Briefing Vespertino con la agenda del siguiente dia laboral.
 """
 
 import os
@@ -24,6 +25,28 @@ CALENDAR_ID          = os.environ.get("CALENDAR_ID", "primary")
 BOGOTA_OFFSET = datetime.timezone(datetime.timedelta(hours=-5))
 
 
+def get_briefing_day():
+    """
+    Dia 'hoy' del briefing = dia laboral que esta cerrando.
+    Si el script corre pasada medianoche por delay de GitHub Actions,
+    retrocede al dia anterior para mantener la perspectiva del disparo programado.
+    """
+    hoy = datetime.datetime.now(BOGOTA_OFFSET)
+    if hoy.hour < 12:
+        hoy -= datetime.timedelta(days=1)
+    return hoy
+
+
+def get_next_workday(today):
+    """Siguiente dia laboral (salta sabado y domingo)."""
+    manana = today + datetime.timedelta(days=1)
+    if manana.weekday() == 5:      # sabado -> lunes
+        manana += datetime.timedelta(days=2)
+    elif manana.weekday() == 6:    # domingo -> lunes
+        manana += datetime.timedelta(days=1)
+    return manana
+
+
 def get_google_credentials():
     creds = Credentials(
         token=None,
@@ -39,18 +62,8 @@ def get_google_credentials():
 
 def get_calendar_events(creds):
     service = build("calendar", "v3", credentials=creds)
-
-    # Usamos MAÃANA (hoy + 1 dia) porque Alfred envia el reporte la noche anterior
-    hoy          = datetime.datetime.now(BOGOTA_OFFSET)
-    # Compensar delays de GitHub Actions (hasta 6h): si el cron corre entre 0h-6h Bogota
-    # es porque se atraso desde las 8 PM — retrocedemos al dia anterior para calcular manana
-    if hoy.hour < 6:
-        hoy -= datetime.timedelta(days=1)
-    manana        = hoy + datetime.timedelta(days=1)
-    if manana.weekday() == 5:    # sabado -> lunes
-        manana += datetime.timedelta(days=2)
-    elif manana.weekday() == 6:  # domingo -> lunes
-        manana += datetime.timedelta(days=1)
+    hoy = get_briefing_day()
+    manana = get_next_workday(hoy)
     start_of_day = manana.replace(hour=0,  minute=0,  second=0,  microsecond=0)
     end_of_day   = manana.replace(hour=23, minute=59, second=59, microsecond=0)
 
@@ -77,7 +90,6 @@ def get_calendar_events(creds):
         cal_id   = cal["id"]
         cal_name = cal.get("summary", "")
 
-        # Saltar festivos, contactos y directorio
         if any(skip in cal_id.lower() for skip in ["holiday", "contacts", "directory"]):
             print(f"  Saltando: {cal_name}")
             continue
@@ -113,11 +125,11 @@ def get_calendar_events(creds):
         cal_name    = event.get("_cal_name", "")
 
         if "T" in start:
-            dt         = datetime.datetime.fromisoformat(start)
+            dt          = datetime.datetime.fromisoformat(start)
             hora_inicio = dt.strftime("%I:%M %p")
-            dt_end     = datetime.datetime.fromisoformat(end)
-            hora_fin   = dt_end.strftime("%I:%M %p")
-            hora_str   = f"{hora_inicio} - {hora_fin}"
+            dt_end      = datetime.datetime.fromisoformat(end)
+            hora_fin    = dt_end.strftime("%I:%M %p")
+            hora_str    = f"{hora_inicio} - {hora_fin}"
         else:
             hora_str = "Todo el dia"
 
@@ -167,26 +179,23 @@ def get_urgent_emails(creds):
 
 
 def generate_report(calendar_text, email_text):
-    hoy    = datetime.datetime.now(BOGOTA_OFFSET)
-    manana  = hoy + datetime.timedelta(days=1)
-    if manana.weekday() == 5:    # sabado -> lunes
-        manana += datetime.timedelta(days=2)
-    elif manana.weekday() == 6:  # domingo -> lunes
-        manana += datetime.timedelta(days=1)
+    hoy    = get_briefing_day()
+    manana = get_next_workday(hoy)
     fecha  = manana.strftime("%A %d de %B de %Y")
-    hora   = hoy.strftime("%I:%M %p")
+    hora   = datetime.datetime.now(BOGOTA_OFFSET).strftime("%I:%M %p")
 
     prompt = (
         'Eres Alfred, mayordomo ejecutivo de Sr. Checho, Director General de Amin.\n'
         'Genera un informe vespertino conciso y profesional en espanol '
-        'en formato bonito para Telegram (usa emojis).\n'
+        'en TEXTO PLANO para Telegram. Usa emojis pero NO uses markdown: '
+        'nada de asteriscos (*) ni guiones bajos (_) ni corchetes ([ ]) para formato.\n'
         f'Fecha del reporte: hoy en la noche\nAgenda para: {fecha}\nHora de envio: {hora}\n'
         f'EVENTOS DE MANANA EN GOOGLE CALENDAR:\n{calendar_text}\n'
         f'EMAILS URGENTES (ultimas 24h):\n{email_text}\n'
-        'Instrucciones: saludo indicando que este es el briefing de la noche con la agenda del dia siguiente, '
-        'emojis de reloj y luna, seccion emails urgentes, '
-        'resumen ejecutivo de la agenda de manana, formato Telegram (*negrita*, _cursiva_), '
-        'tono de mayordomo britanico, maximo 2000 chars.'
+        'Instrucciones: saludo indicando que este es el briefing de la noche con la agenda del dia siguiente. '
+        'Emojis de reloj y luna. Seccion de emails urgentes. '
+        'Resumen ejecutivo de la agenda de manana. Texto plano, nada de *negrita* ni _cursiva_ ni [brackets]. '
+        'Tono de mayordomo britanico eficiente. Maximo 2000 caracteres.'
     )
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -212,8 +221,14 @@ def generate_report(calendar_text, email_text):
 
 
 def send_telegram(text):
+    """Envia el mensaje por Telegram como texto plano (sin parse_mode).
+
+    Nota: se quito parse_mode='Markdown' porque cualquier caracter especial
+    (_, *, [, ], `) en titulos de eventos o emails causaba 400 Bad Request
+    'can't parse entities' y el workflow fallaba silenciosamente.
+    """
     url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     resp = requests.post(url, data=data, timeout=30)
     resp.raise_for_status()
 
